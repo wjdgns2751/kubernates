@@ -1,0 +1,31 @@
+version: "3"
+services:
+  db:
+    container_name: mysql
+    image: oscarfonts/h2:latest
+    restart: always
+    ports:
+      - "1521:1521"
+      - "8081:81"
+    environment:
+      H2_OPTIONS: -ifNotExists
+    volumes:
+      - ./h2/:/opt/h2-data
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: jeong-spring
+    image: wjdgns2/jeongspring-compose
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:h2:tcp://h2:1521/demo
+      SPRING_DATASOURCE_USERNAME: sa
+      SPRING_DATASOURCE_PASSWORD: 12
+    depends_on:
+      - db
+
+
+
+

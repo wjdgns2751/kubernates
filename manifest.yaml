@@ -1,0 +1,220 @@
+##MYSQL Service Start
+
+# 암호화 키 
+echo -n '<YOUR_NEW_PASSWORD>' | base64 
+
+# 방화벽 설정 
+sudo ufw allow 3306/tcp
+sudo ufw allow 8080/tcp
+sudo ufw enable
+
+# Secret 생성
+cat <<EOF >./mysql-s.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+    name: mp #mysql-pass
+type: Opaque
+data: 
+    mysql-root-password: MTIzNA== #1234      
+    mysql-user-password: MTIzNA== #1234     
+EOF
+
+#Deployment 생성
+cat <<EOF >./mysql-dp.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: jeongspring-mysql
+  labels:
+    app: jeongspring
+spec:
+  ports:
+    - port: 3306
+  selector:
+    app: jeongspring
+    tier: mysql
+  clusterIP: None
+---
+apiVersion: v1 # Kubernetes v1 API
+kind: PersistentVolume #정의되는 리소스의 종류
+metadata: # 메타데이터(이름, 레이블, 주석 등)를 정의하는 섹션
+  name: mysql-pv # 해당 PersistentVolume 리소스의 이름을 지정
+  labels:
+    name: mysql
+spec: # PersistentVolume 리소스의 사양(속성 및 설정)을 정의하는 섹션
+  storageClassName: jeongspring 
+  capacity: # PV의 용량을 정의
+    storage: 1Gi
+  accessModes: # PV에 대한 액세스 모드를 정의, PV가 읽기/쓰기 액세스를 한 번에 한 클라이언트에게만 허용한다는 것을 의미
+    - ReadWriteOnce
+  hostPath:
+    path: /data/mysql-data # 호스트 머신의 경로, 호스트 머신의 /data/mysql-data 디렉토리에 저장됨을 의미  
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mysql-pvc
+  labels:
+    app: jeongspring
+spec:
+  storageClassName: jeongspring 
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jeongspring-mysql
+  labels:
+    app: jeongspring
+spec:
+  selector:
+    matchLabels:
+      app: jeongspring
+      tier: mysql
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: jeongspring
+        tier: mysql
+    spec:
+      containers:
+      - image: mysql:latest
+	    imagePullPolicy: IfNotPresent  
+        name: mysql
+        env:
+        - name: MYSQL_DATABASE
+          valueFrom:
+            configMapKeyRef:
+              name: mcm
+              key: mysql-database-name
+        - name: MYSQL_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mp
+              key: mysql-root-password
+        - name: MYSQL_USER
+          valueFrom:
+            configMapKeyRef:
+              name: mcm
+              key: mysql-user-username
+        - name: MYSQL_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mp
+              key: mysql-user-password
+        livenessProbe:
+          tcpSocket:
+            port: 3306
+        ports:
+        - containerPort: 3306
+          name: mysql
+        volumeMounts:
+        - name: mysql-persistent-storage
+          mountPath: /var/lib/mysql
+      volumes:
+      - name: mysql-persistent-storage
+        persistentVolumeClaim:
+          claimName: mysql-pvc
+EOF
+
+
+# configureMap 생성
+cat <<EOF >./mysql-cm.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mcm # mysql-config-map
+data:
+  mysql-server: jeongspring-server    
+  mysql-database-name: jeongspring     
+  mysql-user-username: jeong       
+EOF
+
+
+# Spring Service Start
+
+# NGINX INGRESS CONTROLLER 설치
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.0.0/deploy/static/provider/cloud/deploy.yaml
+
+# spring Deployment 생성
+cat <<EOF >./spring-dp.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jeongspring  # Deployment의 이름을 지정합니다.
+  labels:
+    app: jeongspring  # Deployment에 부여된 레이블입니다.
+spec:
+  replicas: 1  # 복제본의 수를 1로 설정합니다. 이 경우 1개의 Pod만 생성됩니다.
+  selector:
+    matchLabels:
+      app: jeongspring  # Pod를 선택하기 위한 레이블 선택기입니다.
+  template:
+    metadata:
+      labels:
+        app: jeongspring  # Pod에 부여된 레이블입니다.
+    spec:
+      containers:
+      - name: jeongspring  # 컨테이너의 이름을 지정합니다.
+        image: wjdgns2/jeong-spring-mysql:latest  # 사용할 컨테이너 이미지를 지정합니다.
+        imagePullPolicy: IfNotPresent  # 이미지 가져오기 정책을 설정합니다.
+        ports:
+          - name: http
+            containerPort: 8080  # 컨테이너 내에서 8080 포트를 노출합니다.
+        env:  # 환경 변수를 정의합니다.
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mp
+              key: mysql-user-password  # 비밀 키를 사용하여 환경 변수 값을 설정합니다.
+        - name: DB_SERVER
+          valueFrom:
+            configMapKeyRef:
+              name: mcm
+              key: mysql-server  # ConfigMap에서 환경 변수 값을 가져옵니다.
+        - name: DB_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: mcm
+              key: mysql-database-name  # ConfigMap에서 환경 변수 값을 가져옵니다.
+        - name: DB_USERNAME
+          valueFrom:
+            configMapKeyRef:
+              name: mcm
+              key: mysql-user-username  # ConfigMap에서 환경 변수 값을 가져옵니다.
+      
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: jeongspring-ingress  # Ingress의 이름을 지정합니다.
+spec:
+  rules:
+  - http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: jeongspring  # 이전에 생성한 Service의 이름을 가리킵니다.
+            port:
+              number: 8080  # Service에서 사용 중인 포트 번호를 지정합니다.  
+EOF
+
+#파드,서비스,디플로이먼트 적용  
+kubectl apply -f mysql-cm.yaml
+kubectl apply -f mysql-s.yaml
+kubectl apply -f mysql-dp.yaml
+kubectl apply -f spring-dp.yaml
+
+#mysql server 확인
+kubectl exec -it deploy/jeongspring-mysql -- /bin/bash
+
+mysql --user=$MYSQL_USER --password=$MYSQL_PASSWORD
